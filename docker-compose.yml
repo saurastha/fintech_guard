@@ -1,0 +1,19 @@
+version: "3.8"
+
+networks:
+  fintech_network:
+    driver: bridge
+
+services:
+  ingestion_service:
+    build:
+      context: ./ingestion
+      dockerfile: Dockerfile
+    container_name: fintech_ingestion
+    networks:
+      - fintech_network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
