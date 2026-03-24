@@ -1,0 +1,13 @@
+{
+    "namespace": "com.fintech.guard",
+    "type": "record",
+    "name": "Transaction",
+    "fields":[
+        {"name": "transaction_id", "type": "string"},
+        {"name": "user_id", "type": "int"},
+        {"name": "amount", "type": "double"},
+        {"name": "currency", "type": "string"},
+        {"name": "timestamp", "type": "double"},
+        {"name": "merchant", "type": "string"}
+  ]
+}
