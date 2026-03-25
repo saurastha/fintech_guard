@@ -1,69 +1,62 @@
+import os
+import sys
 import time
 import json
-import random
-
-import os
-import uuid
-from faker import Faker
+import signal
+from loguru import logger
 from confluent_kafka import Producer
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import SerializationContext, MessageField
-from loguru import logger
 
-fake = Faker()
+from config import (
+    KAFKA_BOOTSTRAP_SERVERS,
+    SCHEMA_REGISTRY_URL,
+    TOPIC_NAME,
+    DLQ_TOPIC_NAME,
+)
+from generator import generate_transaction
 
-producer_config = {"bootstrap.servers": "kafka:9092"}
-
-producer = Producer(producer_config)
-
-TOPIC_NAME = "transaction"
-DLQ_TOPIC_NAME = "transaction-dlq"
+producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})
 
 
 def deliver_report(err, msg):
     if err is not None:
-        logger.error(f"Message delivery failed: {msg}")
+        logger.error(f"Message delivery failed: {err}")
     else:
         logger.info(f"Message delivered to {msg.topic()} [{msg.partition()}]")
 
 
-def generate_transaction():
-    prob = random.randint(0, 10)
+def shutdown_handler(sig, frame):
+    """Handles Docker sending SIGTERM or user sending SIGINT (Ctrl+C)"""
+    logger.info("Received shutdown signal. Flushing producer and exiting gracefully...")
+    producer.flush()
+    sys.exit(0)
 
-    data = {
-        "transaction_id": str(uuid.uuid4()),
-        "user_id": fake.random_int(min=1000, max=9999),
-        "amount": round(fake.random.uniform(1.0, 5000.0), 2),
-        "currency": "USD",
-        "timestamp": time.time(),
-        "merchant": fake.company(),
-    }
 
-    if prob > 9:
-        data["amount"] = None
-    elif prob > 9:
-        data["transaction_id"] = None
-
-    return data
+signal.signal(signal.SIGINT, shutdown_handler)
+signal.signal(signal.SIGTERM, shutdown_handler)
 
 
 def run():
     schema_file_name = "transaction.avsc"
     path = os.path.realpath(os.path.dirname(__file__))
 
-    with open(f"{path}/{schema_file_name}") as f:
+    with open(os.path.join(path, schema_file_name)) as f:
         schema_str = f.read()
 
-    schema_registry_conf = {"url": "http://schema_registry:8081"}
-    schema_registry_client = SchemaRegistryClient(schema_registry_conf)
+    schema_registry_client = SchemaRegistryClient({"url": SCHEMA_REGISTRY_URL})
     avro_serializer = AvroSerializer(
         schema_registry_client, schema_str, conf={"auto.register.schemas": True}
     )
 
-    logger.info("Starting transaction ingestion...")
+    logger.info(
+        f"Starting transaction ingestion... Connected to {KAFKA_BOOTSTRAP_SERVERS}"
+    )
+
     while True:
         transaction = generate_transaction()
+        user_id = str(transaction.get("user_id", "unknown"))
 
         try:
             serialized_value = avro_serializer(
@@ -72,7 +65,7 @@ def run():
 
             producer.produce(
                 topic=TOPIC_NAME,
-                key=str(transaction["user_id"]),
+                key=user_id,
                 value=serialized_value,
                 callback=deliver_report,
             )
@@ -80,23 +73,22 @@ def run():
         except Exception as e:
             logger.warning(f"Invalid data detected! Routing to DLQ. Error: {e}")
 
-            raw_json_bytes = json.dumps(transaction).encode("utf-8")
-
-            producer.produce(
-                topic=DLQ_TOPIC_NAME,
-                key=str(transaction.get("user_id", "unknown")),
-                value=raw_json_bytes,
-                callback=deliver_report,
-            )
+            try:
+                raw_json_bytes = json.dumps(transaction).encode("utf-8")
+                producer.produce(
+                    topic=DLQ_TOPIC_NAME,
+                    key=user_id,
+                    value=raw_json_bytes,
+                    callback=deliver_report,
+                )
+            except Exception as dlq_e:
+                logger.critical(
+                    f"CRITICAL: Failed to route to DLQ! Data lost. Error: {dlq_e}"
+                )
 
         producer.poll(0)
         time.sleep(3)
 
 
 if __name__ == "__main__":
-    try:
-        run()
-    except KeyboardInterrupt:
-        logger.info("Stopping ingestion...")
-    finally:
-        producer.flush()
+    run()
