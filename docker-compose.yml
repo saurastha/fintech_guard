@@ -3,6 +3,7 @@ version: "3.8"
 networks:
   fintech_network:
     driver: bridge
+
 services:
   kafka:
     image: confluentinc/cp-kafka:7.8.3
@@ -43,7 +44,7 @@ services:
           memory: 1G
 
   schema_registry:
-    image: confluentinc/cp-schema-registry:7.4.0
+    image: confluentinc/cp-schema-registry:7.8.3
     container_name: fintech_schema_registry
     depends_on:
       kafka:
@@ -51,7 +52,7 @@ services:
     ports:
       - "8081:8081"
     environment:
-      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_HOST_NAME: schema_registry
       SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "kafka:9092"
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
     healthcheck:
@@ -66,11 +67,14 @@ services:
   ingestion_service:
     build:
       context: .
-      dockerfile: ingestion/Dockerfile
+      dockerfile: docker/ingestion.Dockerfile
     container_name: fintech_ingestion
     depends_on:
       schema_registry:
         condition: service_healthy
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SCHEMA_REGISTRY_URL=http://schema_registry:8081
     networks:
       - fintech_network
     deploy:
